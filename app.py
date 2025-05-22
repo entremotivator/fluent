@@ -134,24 +134,76 @@ def get_download_link(data, filename, text):
     href = f'<a href="data:file/json;base64,{b64}" download="{filename}">{text}</a>'
     return href
 
-def fetch_contacts(use_cache=True):
-    """Fetch contacts with caching"""
+def fetch_contacts(use_cache=True, max_contacts=None):
+    """Fetch contacts with caching and pagination support"""
     if not check_auth():
         return []
     
     if use_cache and st.session_state.contacts_cache is not None:
         return st.session_state.contacts_cache
     
-    response = make_api_request("subscribers?per_page=100")
-    if response and response.status_code == 200:
+    all_contacts = []
+    page = 1
+    per_page = 100
+    
+    # Show progress for large datasets
+    progress_placeholder = st.empty()
+    
+    while True:
+        progress_placeholder.info(f"📥 Fetching contacts... Page {page}")
+        
+        # Build the query parameters
+        params = f"per_page={per_page}&page={page}&custom_fields=true"
+        response = make_api_request(f"subscribers?{params}")
+        
+        if not response or response.status_code != 200:
+            if response:
+                st.error(f"Failed to fetch contacts on page {page}: {response.status_code}")
+            break
+        
         data = response.json()
-        contacts = data.get('data', [])
-        st.session_state.contacts_cache = contacts
-        return contacts
-    else:
-        if response:
-            st.error(f"Failed to fetch contacts: {response.status_code}")
-        return []
+        
+        # Handle the paginated response structure
+        if isinstance(data, dict) and 'data' in data:
+            contacts_batch = data['data']
+            pagination_info = {
+                'current_page': data.get('current_page', page),
+                'per_page': data.get('per_page', per_page),
+                'total': data.get('total', 0),
+                'last_page': data.get('last_page', 1)
+            }
+        else:
+            # Fallback for non-paginated response
+            contacts_batch = data if isinstance(data, list) else []
+            pagination_info = {'current_page': 1, 'last_page': 1, 'total': len(contacts_batch)}
+        
+        if not contacts_batch:
+            break
+        
+        all_contacts.extend(contacts_batch)
+        
+        # Check if we've reached the maximum requested contacts
+        if max_contacts and len(all_contacts) >= max_contacts:
+            all_contacts = all_contacts[:max_contacts]
+            break
+        
+        # Check if we've reached the last page
+        if pagination_info['current_page'] >= pagination_info['last_page']:
+            break
+        
+        page += 1
+        
+        # Safety limit to prevent infinite loops
+        if page > 1000:  # Reasonable limit
+            st.warning("⚠️ Reached maximum page limit (1000). Some contacts may not be loaded.")
+            break
+    
+    progress_placeholder.empty()
+    
+    # Cache the results
+    st.session_state.contacts_cache = all_contacts
+    
+    return all_contacts
 
 def fetch_custom_fields(use_cache=True):
     """Fetch custom fields with caching"""
@@ -234,104 +286,161 @@ def view_contacts_page():
     if not check_auth():
         return
     
-    # Add refresh button
-    col1, col2 = st.columns([1, 4])
+    # Add refresh and options
+    col1, col2, col3 = st.columns([1, 1, 3])
     with col1:
         if st.button("🔄 Refresh"):
             st.session_state.contacts_cache = None
+            st.rerun()
+    
+    with col2:
+        max_contacts = st.number_input("Max contacts to load", min_value=10, max_value=10000, value=1000, step=10)
     
     # Fetch contacts
     with st.spinner("Loading contacts..."):
-        contacts = fetch_contacts(use_cache=False if st.button("🔄 Refresh", key="hidden") else True)
+        contacts = fetch_contacts(use_cache=False if st.session_state.get('refresh_contacts', False) else True, 
+                                max_contacts=max_contacts)
     
     if not contacts:
         st.info("📭 No contacts found or unable to fetch contacts.")
         return
     
-    st.success(f"📊 Found {len(contacts)} contacts")
+    st.success(f"📊 Loaded {len(contacts)} contacts")
+    
+    # Add search functionality
+    search_term = st.text_input("🔍 Search contacts", placeholder="Search by name or email...")
+    
+    # Filter contacts based on search
+    if search_term:
+        filtered_contacts = []
+        search_lower = search_term.lower()
+        for c in contacts:
+            name = c.get("full_name", "").lower()
+            email = c.get("email", "").lower()
+            if search_lower in name or search_lower in email:
+                filtered_contacts.append(c)
+        contacts = filtered_contacts
+        st.info(f"🔍 Found {len(contacts)} contacts matching '{search_term}'")
     
     # Display contacts in a table
-    contact_data = []
-    for c in contacts:
-        contact_data.append({
-            "ID": c.get("id", ""),
-            "Name": c.get("full_name", ""),
-            "Email": c.get("email", ""),
-            "Status": c.get("status", ""),
-            "Phone": c.get("phone", ""),
-            "Created": c.get("created_at", "")
-        })
-    
-    contact_df = pd.DataFrame(contact_data)
-    st.dataframe(contact_df, use_container_width=True)
-    
-    # Contact details
-    st.subheader("📋 Contact Details")
-    
-    contact_options = []
-    for c in contacts:
-        name = c.get("full_name", "Unknown")
-        email = c.get("email", "")
-        display_name = f"{name} ({email})" if email else name
-        contact_options.append((c.get("id"), display_name))
-    
-    if contact_options:
-        selected_contact_id = st.selectbox(
-            "Select a contact to view details",
-            options=[option[0] for option in contact_options],
-            format_func=lambda x: next((option[1] for option in contact_options if option[0] == x), "")
-        )
+    if contacts:
+        contact_data = []
+        for c in contacts:
+            contact_data.append({
+                "ID": c.get("id", ""),
+                "Name": c.get("full_name", ""),
+                "Email": c.get("email", ""),
+                "Status": c.get("status", ""),
+                "Phone": c.get("phone", ""),
+                "Type": c.get("contact_type", ""),
+                "Source": c.get("source", ""),
+                "Created": c.get("created_at", "")
+            })
         
-        if selected_contact_id:
-            selected_contact = next((c for c in contacts if c.get("id") == selected_contact_id), None)
-            if selected_contact:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    photo_url = selected_contact.get("photo", "https://www.gravatar.com/avatar/00000000000000000000000000000000?s=128")
-                    st.image(photo_url, width=100)
-                    
-                    st.write(f"**👤 Name:** {selected_contact.get('prefix', '')} {selected_contact.get('full_name', 'Unknown')}")
-                    st.write(f"**📧 Email:** {selected_contact.get('email', 'N/A')}")
-                    st.write(f"**📱 Phone:** {selected_contact.get('phone', 'N/A')}")
-                    st.write(f"**📊 Status:** {selected_contact.get('status', 'N/A')}")
-                    st.write(f"**🎂 Date of Birth:** {selected_contact.get('date_of_birth', 'N/A')}")
-                
-                with col2:
-                    st.write(f"**🏠 Address:** {selected_contact.get('address_line_1', 'N/A')}")
-                    st.write(f"**🏠 Address Line 2:** {selected_contact.get('address_line_2', 'N/A')}")
-                    st.write(f"**🏙️ City:** {selected_contact.get('city', 'N/A')}")
-                    st.write(f"**🗺️ State:** {selected_contact.get('state', 'N/A')}")
-                    st.write(f"**📮 Postal Code:** {selected_contact.get('postal_code', 'N/A')}")
-                    st.write(f"**🌍 Country:** {selected_contact.get('country', 'N/A')}")
-                
-                # Tags and Lists
-                st.subheader("🏷️ Tags")
-                tags = selected_contact.get("tags", [])
-                if tags:
-                    tag_names = [tag.get("title", "Unknown") for tag in tags if isinstance(tag, dict)]
-                    st.write(", ".join(tag_names))
-                else:
-                    st.write("No tags")
-                
-                st.subheader("📋 Lists")
-                lists = selected_contact.get("lists", [])
-                if lists:
-                    list_names = [lst.get("title", "Unknown") for lst in lists if isinstance(lst, dict)]
-                    st.write(", ".join(list_names))
-                else:
-                    st.write("No lists")
-                
-                # Export individual contact
-                if st.button("💾 Export this contact"):
-                    st.markdown(
-                        get_download_link(
-                            selected_contact, 
-                            f"contact_{selected_contact.get('id')}.json", 
-                            "📥 Download Contact JSON"
-                        ),
-                        unsafe_allow_html=True
-                    )
+        contact_df = pd.DataFrame(contact_data)
+        st.dataframe(contact_df, use_container_width=True)
+        
+        # Contact details
+        st.subheader("📋 Contact Details")
+        
+        contact_options = []
+        for c in contacts:
+            name = c.get("full_name", "Unknown")
+            email = c.get("email", "")
+            display_name = f"{name} ({email})" if email else name
+            contact_options.append((c.get("id"), display_name))
+        
+        if contact_options:
+            selected_contact_id = st.selectbox(
+                "Select a contact to view details",
+                options=[option[0] for option in contact_options],
+                format_func=lambda x: next((option[1] for option in contact_options if option[0] == x), "")
+            )
+            
+            if selected_contact_id:
+                selected_contact = next((c for c in contacts if c.get("id") == selected_contact_id), None)
+                if selected_contact:
+                    display_contact_details(selected_contact)
+
+def display_contact_details(contact):
+    """Display detailed contact information"""
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        photo_url = contact.get("photo", "https://www.gravatar.com/avatar/00000000000000000000000000000000?s=128")
+        try:
+            st.image(photo_url, width=100)
+        except:
+            st.write("📷 Photo not available")
+        
+        st.write(f"**👤 Name:** {contact.get('prefix', '')} {contact.get('full_name', 'Unknown')}")
+        st.write(f"**📧 Email:** {contact.get('email', 'N/A')}")
+        st.write(f"**📱 Phone:** {contact.get('phone', 'N/A')}")
+        st.write(f"**📊 Status:** {contact.get('status', 'N/A')}")
+        st.write(f"**👥 Type:** {contact.get('contact_type', 'N/A')}")
+        st.write(f"**🎂 Date of Birth:** {contact.get('date_of_birth', 'N/A')}")
+    
+    with col2:
+        st.write(f"**🏠 Address:** {contact.get('address_line_1', 'N/A')}")
+        st.write(f"**🏠 Address Line 2:** {contact.get('address_line_2', 'N/A')}")
+        st.write(f"**🏙️ City:** {contact.get('city', 'N/A')}")
+        st.write(f"**🗺️ State:** {contact.get('state', 'N/A')}")
+        st.write(f"**📮 Postal Code:** {contact.get('postal_code', 'N/A')}")
+        st.write(f"**🌍 Country:** {contact.get('country', 'N/A')}")
+        st.write(f"**📍 Source:** {contact.get('source', 'N/A')}")
+        st.write(f"**💰 Lifetime Value:** {contact.get('life_time_value', '0')}")
+    
+    # Additional information
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        # Tags
+        st.subheader("🏷️ Tags")
+        tags = contact.get("tags", [])
+        if tags:
+            tag_names = [tag.get("title", "Unknown") for tag in tags if isinstance(tag, dict)]
+            for tag in tags:
+                if isinstance(tag, dict):
+                    st.badge(tag.get("title", "Unknown"), type="secondary")
+        else:
+            st.write("No tags")
+    
+    with col4:
+        # Lists
+        st.subheader("📋 Lists")
+        lists = contact.get("lists", [])
+        if lists:
+            for lst in lists:
+                if isinstance(lst, dict):
+                    st.badge(lst.get("title", "Unknown"), type="primary")
+        else:
+            st.write("No lists")
+    
+    # Custom fields if available
+    if contact.get("custom_fields"):
+        st.subheader("⚙️ Custom Fields")
+        custom_fields = contact.get("custom_fields", {})
+        if isinstance(custom_fields, dict):
+            for key, value in custom_fields.items():
+                if value:  # Only show non-empty values
+                    st.write(f"**{key}:** {value}")
+    
+    # Export individual contact
+    col_export1, col_export2 = st.columns(2)
+    with col_export1:
+        if st.button("💾 Export this contact"):
+            st.markdown(
+                get_download_link(
+                    contact, 
+                    f"contact_{contact.get('id')}.json", 
+                    "📥 Download Contact JSON"
+                ),
+                unsafe_allow_html=True
+            )
+    
+    with col_export2:
+        if st.button("📋 Copy Contact ID"):
+            st.code(contact.get('id', ''), language=None)
 
 def create_contact_page():
     st.title("➕ Create New Contact")
