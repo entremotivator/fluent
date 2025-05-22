@@ -25,6 +25,8 @@ with st.sidebar:
         st.session_state.api_password = ""
     if 'base_url' not in st.session_state:
         st.session_state.base_url = "https://videmicorp.com"
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
     
     # Input fields for authentication
     st.session_state.base_url = st.text_input("Base URL", st.session_state.base_url)
@@ -84,12 +86,18 @@ def fetch_contacts():
         return []
     
     try:
+        st.write("Attempting to fetch contacts...")  # Debug message
         response = requests.get(
             f"{st.session_state.base_url}/wp-json/fluent-crm/v2/subscribers?per_page=100",
-            auth=get_auth()
+            auth=get_auth(),
+            timeout=15  # Increased timeout
         )
+        st.write(f"Response status: {response.status_code}")  # Debug message
+        
         if response.status_code == 200:
-            return response.json().get('data', [])
+            data = response.json()
+            st.write(f"Fetched {len(data.get('data', []))} contacts")  # Debug message
+            return data.get('data', [])
         else:
             st.error(f"Failed to fetch contacts: {response.status_code} - {response.text}")
             return []
@@ -103,12 +111,18 @@ def fetch_custom_fields():
         return []
     
     try:
+        st.write("Attempting to fetch custom fields...")  # Debug message
         response = requests.get(
             f"{st.session_state.base_url}/wp-json/fluent-crm/v2/custom-fields/contacts",
-            auth=get_auth()
+            auth=get_auth(),
+            timeout=15  # Increased timeout
         )
+        st.write(f"Response status: {response.status_code}")  # Debug message
+        
         if response.status_code == 200:
-            return response.json().get('fields', [])
+            data = response.json()
+            st.write(f"Fetched {len(data.get('fields', []))} custom fields")  # Debug message
+            return data.get('fields', [])
         else:
             st.error(f"Failed to fetch custom fields: {response.status_code} - {response.text}")
             return []
@@ -284,7 +298,7 @@ def create_contact_page():
             prefix = st.text_input("Prefix (Mr, Mrs, etc.)")
             first_name = st.text_input("First Name")
             last_name = st.text_input("Last Name")
-            email = st.text_input("Email")  # Removed required=True as it's not supported
+            email = st.text_input("Email")  # Removed required=True
             phone = st.text_input("Phone")
             dob = st.date_input("Date of Birth", value=None)
             
@@ -386,11 +400,14 @@ def create_contact_page():
                 
                 # Create contact
                 try:
+                    st.write("Sending contact creation request...")  # Debug message
                     response = requests.post(
                         f"{st.session_state.base_url}/wp-json/fluent-crm/v2/subscribers",
                         auth=get_auth(),
                         json=contact_data
                     )
+                    
+                    st.write(f"Response status: {response.status_code}")  # Debug message
                     
                     if response.status_code in [200, 201]:
                         st.success("Contact created successfully!")
