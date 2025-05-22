@@ -275,7 +275,7 @@ def create_contact_page():
         tags, lists = [], []
     
     # Contact form
-    with st.form("contact_form"):
+    with st.form(key="contact_form"):
         st.subheader("Contact Information")
         
         col1, col2 = st.columns(2)
@@ -284,7 +284,7 @@ def create_contact_page():
             prefix = st.text_input("Prefix (Mr, Mrs, etc.)")
             first_name = st.text_input("First Name")
             last_name = st.text_input("Last Name")
-            email = st.text_input("Email", required=True)
+            email = st.text_input("Email")  # Removed required=True as it's not supported
             phone = st.text_input("Phone")
             dob = st.date_input("Date of Birth", value=None)
             
@@ -346,6 +346,7 @@ def create_contact_page():
         else:
             custom_values = {}
         
+        # Submit button - this is required in every form
         submitted = st.form_submit_button("Create Contact")
         
         if submitted:
